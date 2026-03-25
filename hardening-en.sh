@@ -464,18 +464,56 @@ else
     log "Configuring secure global SSH on port $SSH_PORT..."
     SSH_GLOBAL_CONFIGURED=1
     
+    # ==========================================
+    # NEW SECTION: Read existing users BEFORE backup
+    # ==========================================
+    EXISTING_USERS=""
+    if [[ -f /etc/ssh/sshd_config ]]; then
+        EXISTING_USERS=$(grep -E "^\s*AllowUsers\s+" /etc/ssh/sshd_config | tail -1 | sed 's/AllowUsers//' | xargs 2>/dev/null || true)
+        if [[ -n "$EXISTING_USERS" ]]; then
+            info "Existing users detected in AllowUsers: $EXISTING_USERS"
+        fi
+    fi
+    
+    # Make backup AFTER reading existing users
     [[ -f /etc/ssh/sshd_config ]] && cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.$(date +%F)
 
-    ALLOW_USERS_LINE=""
-    if [[ -n "$ADMIN_USER" || -n "$EXISTING_ADMIN_USER" ]]; then
-        ALLOWED_USERS="$ADMIN_USER $EXISTING_ADMIN_USER"
-        ALLOWED_USERS=$(echo "$ALLOWED_USERS" | xargs)
-        ALLOW_USERS_LINE="AllowUsers $ALLOWED_USERS"
-        log "Restricting SSH access to users: $ALLOWED_USERS"
+    # ==========================================
+    # USER MERGE: New + Existing
+    # ==========================================
+    NEW_USERS=""
+    
+    # Collect new users specified by parameter
+    if [[ -n "$ADMIN_USER" ]]; then
+        NEW_USERS="$ADMIN_USER"
+    fi
+    if [[ -n "$EXISTING_ADMIN_USER" ]]; then
+        NEW_USERS="$NEW_USERS $EXISTING_ADMIN_USER"
+    fi
+    NEW_USERS=$(echo "$NEW_USERS" | xargs)
+    
+    # Combine with existing users and remove duplicates
+    if [[ -n "$NEW_USERS" && -n "$EXISTING_USERS" ]]; then
+        # New users and existing users found - merge them
+        ALLOWED_USERS=$(echo "$NEW_USERS $EXISTING_USERS" | tr ' ' '\n' | sort -u | tr '\n' ' ' | xargs)
+        log "User merge completed. Allowed users: $ALLOWED_USERS"
+    elif [[ -n "$NEW_USERS" ]]; then
+        # Only new users
+        ALLOWED_USERS="$NEW_USERS"
+        log "Configuring SSH access for users: $ALLOWED_USERS"
+    elif [[ -n "$EXISTING_USERS" ]]; then
+        # Only existing users (no new ones specified)
+        ALLOWED_USERS="$EXISTING_USERS"
+        log "Preserving existing SSH users: $ALLOWED_USERS"
     else
-        warn "No users specified. AllowUsers will not be configured"
+        # No users at all
+        ALLOWED_USERS=""
+        warn "No users specified and no existing AllowUsers found"
     fi
 
+    # ==========================================
+    # WRITE SSH CONFIGURATION
+    # ==========================================
     cat > /etc/ssh/sshd_config <<EOF
 # Hardened SSH Configuration
 Port $SSH_PORT
